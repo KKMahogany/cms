@@ -442,6 +442,13 @@ td.token_rules p:last-child {
     line-height: 18px;
 }
 
+#submission_lang {
+    height: auto;
+    padding-left: 2px;
+    padding-top: 0px;
+    padding-bottom: 0px;
+    padding-right: 0px;
+}
 
 /*** Submissions table */
 
@@ -460,6 +467,10 @@ td.token_rules p:last-child {
 
 #submission_list colgroup col.total_score {
     width: 20%;
+}
+
+#submission_list colgroup col.language {
+    width: 1%;
 }
 
 #submission_list colgroup col.files {
@@ -483,6 +494,10 @@ td.token_rules p:last-child {
 #submission_list tbody tr td.status .details {
     float: right;
     cursor: pointer;
+}
+
+#submission_list tbody tr td.language {
+    white-space: nowrap;
 }
 
 #submission_list tbody tr td.files,

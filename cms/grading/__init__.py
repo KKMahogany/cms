@@ -37,8 +37,9 @@ from collections import namedtuple
 from sqlalchemy.orm import joinedload
 
 from cms import config, \
-    LANG_C, LANG_CPP, LANG_PASCAL, LANG_PYTHON, LANG_PHP, LANG_JAVA, \
-    SCORE_MODE_MAX
+    LANG_C, LANG_CPP, LANG_CS, LANG_PASCAL, LANG_PYTHON2, LANG_PYTHON3, LANG_PHP, LANG_JAVA, \
+    SCORE_MODE_MAX, LANGUAGE_TO_MAX_PROCCESSORS, PYTHON3_COMPILE_NAME, \
+    JAVA_CLASS_NAME
 from cms.db import Submission
 from cms.grading.Sandbox import Sandbox
 
@@ -231,6 +232,11 @@ def get_compilation_commands(language, source_filenames, executable_filename,
                     "-o", executable_filename]
         command += source_filenames
         commands.append(command)
+    elif language == LANG_CS:
+    	command = ["/usr/bin/mcs"]
+        command += source_filenames
+    	command += ["-out:%s" % executable_filename]
+    	commands.append(command)
     elif language == LANG_PASCAL:
         command = ["/usr/bin/fpc"]
         if for_evaluation:
@@ -238,24 +244,31 @@ def get_compilation_commands(language, source_filenames, executable_filename,
         command += ["-XS", "-O2", "-o%s" % executable_filename]
         command += [source_filenames[0]]
         commands.append(command)
-    elif language == LANG_PYTHON:
+    elif language == LANG_PYTHON2:
         # The executable name is fixed, and there is no way to specify
         # the name of the pyc, so we need to bundle together two
         # commands (compilation and rename).
-        # In order to use Python 3 change them to:
-        # /usr/bin/python3 -m py_compile %s
-        # mv __pycache__/%s.*.pyc %s
         py_command = ["/usr/bin/python2", "-m", "py_compile",
                       source_filenames[0]]
-        mv_command = ["/bin/mv", "%s.pyc" % os.path.splitext(os.path.basename(
+        mv_command = ["/bin/mv", "%s.py2c" % os.path.splitext(os.path.basename(
                       source_filenames[0]))[0], executable_filename]
+        commands.append(py_command)
+        commands.append(mv_command)
+    elif language == LANG_PYTHON3:
+        # The executable name is fixed, and there is no way to specify
+        # the name of the pyc, so we need to bundle together two
+        # commands (compilation and rename).
+        py_command = ["/usr/bin/python3", "-m", "py_compile",
+                      source_filenames[0]]
+        mv_command = ["/bin/mv", "__pycache__/%s.%s.pyc" % (os.path.splitext(os.path.basename(
+                      source_filenames[0]))[0], PYTHON3_COMPILE_NAME), executable_filename]
         commands.append(py_command)
         commands.append(mv_command)
     elif language == LANG_PHP:
         command = ["/bin/cp", source_filenames[0], executable_filename]
         commands.append(command)
     elif language == LANG_JAVA:
-        class_name = os.path.splitext(source_filenames[0])[0]
+        class_name = JAVA_CLASS_NAME
         command = ["/usr/bin/gcj", "--main=%s" % class_name, "-O3", "-o",
                    executable_filename] + source_filenames
         commands.append(command)
@@ -281,11 +294,15 @@ def get_evaluation_commands(language, executable_filename):
     if language in (LANG_C, LANG_CPP, LANG_PASCAL, LANG_JAVA):
         command = [os.path.join(".", executable_filename)]
         commands.append(command)
-    elif language == LANG_PYTHON:
-        # In order to use Python 3 change it to:
-        # /usr/bin/python3 %s
+    elif language == LANG_PYTHON2:
         command = ["/usr/bin/python2", executable_filename]
         commands.append(command)
+    elif language == LANG_PYTHON3:
+        command = ["/usr/bin/python3", executable_filename]
+        commands.append(command)
+    elif language == LANG_CS:
+    	command = ["/usr/bin/mono", executable_filename]
+    	commands.append(command)
     elif language == LANG_PHP:
         command = ["/usr/bin/php5", executable_filename]
         commands.append(command)
@@ -294,7 +311,7 @@ def get_evaluation_commands(language, executable_filename):
     return commands
 
 
-def format_status_text(status, translator=None):
+def format_status_text(status, translator=None, interface_type=None):
     """Format the given status text in the given locale.
 
     A status text is the content of SubmissionResult.compilation_text,
@@ -318,6 +335,9 @@ def format_status_text(status, translator=None):
     if translator is None:
         translator = lambda x: x
 
+    if interface_type == 'aio':
+        translator = AIOTranslator(translator)
+
     try:
         if isinstance(status, six.text_type):
             status = json.loads(status)
@@ -330,6 +350,25 @@ def format_status_text(status, translator=None):
                      "text: %r", status, exc_info=True)
         return translator("N/A")
 
+def AIOTranslator(translator):
+    def simplify_status_text(status):
+        mapping_startswith = [
+            ("Execution failed because of sandbox error",              "Judge error, please notify judges"),
+            ("Execution killed because of forbidden syscall",          "Program killed due to illegal operation. Please check the rules regarding allowable system calls"),
+            ("Execution timed out (wall clock limit exceeded)",        "Time limit exceeded"),
+            ("Execution timed out",                                    "Time limit exceeded"),
+            ("Execution killed because of forbidden file access:",     "Forbidden file access. Please check your input/output filenames match those in the problem"),
+            ("Execution killed with signal 11",                        "Program crashed after accessing or requesting invalid memory"),
+            ("Execution killed with signal 10",                        "Program crashed after accessing or requesting invalid memory"),
+            ("Execution killed with signal 8",                         "Program crashed after a division by zero error"),
+            ("Execution killed with signal",                           "Program crashed for an unknown reason"),
+            ("Execution failed because the return code was nonzero",   "Return code nonzero, possibly due to exception being thrown")
+        ]
+        for old, new in mapping_startswith:
+            if status.startswith(old):
+                return new
+        return status
+    return lambda x:translator(simplify_status_text(x))
 
 def compilation_step(sandbox, commands):
     """Execute some compilation commands in the sandbox, setting up the
@@ -457,7 +496,7 @@ def compilation_step(sandbox, commands):
 
 
 def evaluation_step(sandbox, commands,
-                    time_limit=0.0, memory_limit=0,
+                    time_limit=0.0, memory_limit=0, max_processes=LANGUAGE_TO_MAX_PROCCESSORS['default'],
                     allow_dirs=None, writable_files=None,
                     stdin_redirect=None, stdout_redirect=None):
     """Execute some evaluation commands in the sandbox. Note that in
@@ -468,6 +507,7 @@ def evaluation_step(sandbox, commands,
     commands ([[string]]): the actual evaluation lines.
     time_limit (float): time limit in seconds.
     memory_limit (int): memory limit in MB.
+    max_processes (int): maximum number of threads allowed.
     allow_dirs ([string]|None): if not None, a list of external
         directories to map inside the sandbox
     writable_files ([string]|None): if not None, a list of inner file
@@ -482,7 +522,7 @@ def evaluation_step(sandbox, commands,
     """
     for command in commands:
         success = evaluation_step_before_run(
-            sandbox, command, time_limit, memory_limit,
+            sandbox, command, time_limit, memory_limit, max_processes,
             allow_dirs, writable_files,
             stdin_redirect, stdout_redirect, wait=True)
         if not success:
@@ -497,7 +537,7 @@ def evaluation_step(sandbox, commands,
 
 
 def evaluation_step_before_run(sandbox, command,
-                               time_limit=0, memory_limit=0,
+                               time_limit=0, memory_limit=0, max_processes=LANGUAGE_TO_MAX_PROCCESSORS['default'],
                                allow_dirs=None, writable_files=None,
                                stdin_redirect=None, stdout_redirect=None,
                                wait=False):
@@ -520,6 +560,7 @@ def evaluation_step_before_run(sandbox, command,
         sandbox.wallclock_timeout = 0
     sandbox.address_space = memory_limit * 1024
     sandbox.fsize = config.max_file_size
+    sandbox.max_processes = max_processes;
 
     if stdin_redirect is not None:
         sandbox.stdin_file = stdin_redirect

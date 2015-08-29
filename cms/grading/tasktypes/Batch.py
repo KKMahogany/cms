@@ -27,7 +27,8 @@ from __future__ import unicode_literals
 import logging
 
 from cms import LANGUAGES, LANGUAGE_TO_SOURCE_EXT_MAP, \
-    LANGUAGE_TO_HEADER_EXT_MAP, LANGUAGE_TO_OBJ_EXT_MAP
+    LANGUAGE_TO_HEADER_EXT_MAP, LANGUAGE_TO_OBJ_EXT_MAP, \
+    LANGUAGE_TO_MAX_PROCCESSORS
 from cms.grading import get_compilation_commands, get_evaluation_commands, \
     compilation_step, evaluation_step, human_evaluation_message, \
     is_evaluation_passed, extract_outcome_and_text, white_diff_step
@@ -105,6 +106,24 @@ class Batch(TaskType):
         # TODO add some details if a grader/comparator is used, etc...
         return "Batch"
 
+    @property
+    def input_filename(self):
+        """Returns the name of the input file.
+
+        return (str): the name
+        
+        """
+        return self.parameters[1][0]
+
+    @property
+    def output_filename(self):
+        """Returns the name of the output file.
+
+        return (str): the name
+        
+        """
+        return self.parameters[1][1]
+
     def get_compilation_commands(self, submission_format):
         """See TaskType.get_compilation_commands."""
         res = dict()
@@ -172,6 +191,8 @@ class Batch(TaskType):
                 job.managers["grader%s" % source_ext].digest
 
         # Also copy all managers that might be useful during compilation.
+        # We likely want to compile with .cpp or .o files, so add them to our
+        # command line
         for filename in job.managers.iterkeys():
             if any(filename.endswith(header)
                    for header in LANGUAGE_TO_HEADER_EXT_MAP.itervalues()):
@@ -181,10 +202,14 @@ class Batch(TaskType):
                      for source in LANGUAGE_TO_SOURCE_EXT_MAP.itervalues()):
                 files_to_get[filename] = \
                     job.managers[filename].digest
+                if filename not in source_filenames:
+                    source_filenames.insert(1, filename)
             elif any(filename.endswith(obj)
                      for obj in LANGUAGE_TO_OBJ_EXT_MAP.itervalues()):
                 files_to_get[filename] = \
                     job.managers[filename].digest
+                if filename not in source_filenames:
+                    source_filenames.insert(1, filename)
 
         for filename, digest in files_to_get.iteritems():
             sandbox.create_file_from_storage(filename, digest)
@@ -243,6 +268,7 @@ class Batch(TaskType):
         files_to_get = {
             input_filename: job.input
             }
+        max_processes = LANGUAGE_TO_MAX_PROCCESSORS.get(language, LANGUAGE_TO_MAX_PROCCESSORS['default'])
 
         # Put the required files into the sandbox
         for filename, digest in executables_to_get.iteritems():
@@ -256,6 +282,7 @@ class Batch(TaskType):
             commands,
             job.time_limit,
             job.memory_limit,
+            max_processes,
             writable_files=files_allowing_write,
             stdin_redirect=stdin_redirect,
             stdout_redirect=stdout_redirect)
